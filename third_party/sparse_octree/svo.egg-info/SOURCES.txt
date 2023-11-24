@@ -1,0 +1,7 @@
+setup.py
+src/bindings.cpp
+src/octree.cpp
+svo.egg-info/PKG-INFO
+svo.egg-info/SOURCES.txt
+svo.egg-info/dependency_links.txt
+svo.egg-info/top_level.txt
