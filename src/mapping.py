@@ -99,7 +99,7 @@ class Mapping:
                     self.do_mapping(share_data, tracked_frame)  #正常利用跟踪线程分享的数据建图
                     self.create_voxels(tracked_frame)  #根据当前跟踪的帧来创建体素
 
-                    #下面就是论文里的，避免在已建图的场景不插入关键帧的情况，这里设置固定时间间隔必须插入关键帧
+                    #下面就是论文里的，避免在已建图的场景不插入关键帧的情况，这里每隔50帧必须插入关键帧
                     # if (tracked_frame.stamp - self.current_keyframe.stamp) > 50:
                     if (tracked_frame.stamp - self.current_keyframe.stamp) > 50:
                         self.insert_keyframe(tracked_frame)
@@ -119,7 +119,7 @@ class Mapping:
                         res=self.mesh_res, clean_mesh=True), name=f"mesh_{tracked_frame.stamp:05d}.ply")
 
                 if self.save_data_freq > 0 and (tracked_frame.stamp + 1) % self.save_data_freq == 0:
-                    self.save_debug_data(tracked_frame)  #如果到了存储datra的时机，则save_debug_data
+                    self.save_debug_data(tracked_frame)  #如果到了存储data的时机，则save_debug_data
             elif share_data.stop_mapping: #如果收到share_data停止建图的指令，则停止建图
                 break
 
@@ -146,8 +146,8 @@ class Mapping:
             update_decoder=True  #更新得的decoder
     ):
         # self.map.create_voxels(self.keyframe_graph[0])
-        self.decoder.train()    #调用torch的train函数进行训练
-        optimize_targets = self.select_optimize_targets(tracked_frame) #选择优化目标
+        self.decoder.train()  #调用torch的train函数进行训练
+        optimize_targets = self.select_optimize_targets(tracked_frame) #选择优化目标(优化目标为关键帧)
         # optimize_targets = [f.cuda() for f in optimize_targets]
 
         bundle_adjust_frames(  #BA优化的帧,有如下几个参数
@@ -235,7 +235,7 @@ class Mapping:
             ref_frame_ind, rel_pose = self.frame_poses[i] #获取参考帧的id和相对位姿
             ref_frame = self.keyframe_graph[ref_frame_ind]
             ref_pose = ref_frame.get_pose().detach().cpu() #获取参考帧的位姿
-            pose = ref_pose @ rel_pose #计算绝对位姿
+            pose = ref_pose @ rel_pose #计算绝对位姿=参考帧位姿*相对位姿
             frame_poses += [pose.detach().cpu().numpy()]
         return frame_poses
 
@@ -263,7 +263,7 @@ class Mapping:
         return mesh
 
     @torch.no_grad()
-    def extract_voxels(self, offset=-10): #提取体素
+    def extract_voxels(self, offset=-10):
         voxels, _, features = self.svo.get_centres_and_children() #获取八叉树的体素，子节点，特征
         index = features.eq(-1).any(-1)
         voxels = voxels[~index, :]

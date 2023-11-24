@@ -57,7 +57,7 @@ class VoxSLAM:
             vis_process.start()   #如果开启显示模型，则显示
             self.processes += [vis_process]
 
-    def wait_child_processes(self):
+    def wait_child_processes(self): #等待子进程结束
         for p in self.processes:  #多线程协同
             p.join()
 

@@ -324,33 +324,36 @@ def render_rays(
 
 
 def bundle_adjust_frames(
-    keyframe_graph,
+    keyframe_graph, #优化目标：关键帧
     map_states,
-    sdf_network,
-    loss_criteria,
+    sdf_network, #decoder
+    loss_criteria, #loss
     voxel_size,
     step_size,
-    N_rays=512,
-    num_iterations=10,
+    N_rays=512, #采样射线的个数
+    num_iterations=10, #迭代次数10
     truncation=0.1,
     max_voxel_hit=10,
     max_distance=10,
     learning_rate=[1e-2, 5e-3],
-    embed_optim=None,
-    model_optim=None,
-    update_pose=True,
+    embed_optim=None,  #torch.optim.Adam([self.embeddings], lr=5e-3)  #将embeddings放入Adam
+    model_optim=None, #torch.optim.Adam(self.decoder.parameters(), lr=5e-3)
+    update_pose=True, #True
 ):
+
+    #确定优化器optimizers需要优化的参数
+
     # optimize_params = [{'params': embeddings, 'lr': learning_rate[0]}]
-    optimizers = [embed_optim]
+    optimizers = [embed_optim] #torch.optim.Adam([self.embeddings], lr=5e-3) #将embeddings放入Adam
     if model_optim is not None:
         # optimize_params += [{'params': sdf_network.parameters(),
         #                      'lr': learning_rate[0]}]
-        optimizers += [model_optim]
+        optimizers += [model_optim] #torch.optim.Adam(self.decoder.parameters(), lr=5e-3)
 
     # optimize_params=[]
-    for keyframe in keyframe_graph:
-        if keyframe.stamp != 0 and update_pose:
-            optimizers += [keyframe.optim]
+    for keyframe in keyframe_graph: #遍历关键帧
+        if keyframe.stamp != 0 and update_pose:  #如果不是第一帧并且需要更新位姿
+            optimizers += [keyframe.optim] #将关键帧的优化器放入优化器列表
             # keyframe.pose.requires_grad_(True)
             # optimize_params += [{
             #     'params': keyframe.pose.parameters(), 'lr': learning_rate[1]
@@ -360,32 +363,32 @@ def bundle_adjust_frames(
     #     pose_optim = torch.optim.Adam(optimize_params)
     #     optimizers += [pose_optim]
 
-    for _ in range(num_iterations):
+    for _ in range(num_iterations): #迭代10次
 
         rays_o = []
         rays_d = []
         rgb_samples = []
         depth_samples = []
 
-        for frame in keyframe_graph:
-            pose = frame.get_pose().cuda()
-            frame.sample_rays(N_rays)
+        for frame in keyframe_graph: #遍历关键帧
+            pose = frame.get_pose().cuda() #获取位姿
+            frame.sample_rays(N_rays) #采样射线
 
-            sample_mask = frame.sample_mask.cuda()
-            sampled_rays_d = frame.rays_d[sample_mask].cuda()
+            sample_mask = frame.sample_mask.cuda() #采样结果的mask
+            sampled_rays_d = frame.rays_d[sample_mask].cuda() #采样射线的方向（过滤掉不在视野内的无效射线）
 
-            R = pose[: 3, : 3].transpose(-1, -2)
-            sampled_rays_d = sampled_rays_d@R
-            sampled_rays_o = pose[: 3, 3].reshape(
+            R = pose[: 3, : 3].transpose(-1, -2) #旋转矩阵
+            sampled_rays_d = sampled_rays_d@R #旋转射线方向
+            sampled_rays_o = pose[: 3, 3].reshape( #平移射线起点
                 1, -1).expand_as(sampled_rays_d)
 
             rays_d += [sampled_rays_d]
             rays_o += [sampled_rays_o]
-            rgb_samples += [frame.rgb.cuda()[sample_mask]]
-            depth_samples += [frame.depth.cuda()[sample_mask]]
+            rgb_samples += [frame.rgb.cuda()[sample_mask]] #采样的rgb信息
+            depth_samples += [frame.depth.cuda()[sample_mask]] #采样的深度信息
 
-        rays_d = torch.cat(rays_d, dim=0).unsqueeze(0)
-        rays_o = torch.cat(rays_o, dim=0).unsqueeze(0)
+        rays_d = torch.cat(rays_d, dim=0).unsqueeze(0) #将所有采样的射线方向拼接起来
+        rays_o = torch.cat(rays_o, dim=0).unsqueeze(0) #将所有采样的射线起点拼接起来
         rgb_samples = torch.cat(rgb_samples, dim=0).unsqueeze(0)
         depth_samples = torch.cat(depth_samples, dim=0).unsqueeze(0)
 
@@ -400,17 +403,16 @@ def bundle_adjust_frames(
             max_voxel_hit,
             max_distance,
             # chunk_size=-1
-        )
+        ) #渲染射线
 
-        loss, _ = loss_criteria(
+        loss, _ = loss_criteria( #计算loss
             final_outputs, (rgb_samples, depth_samples))
 
+        for optim in optimizers: #遍历优化器
+            optim.zero_grad() #梯度清零
+        loss.backward() #反向传播
         for optim in optimizers:
-            optim.zero_grad()
-        loss.backward()
-
-        for optim in optimizers:
-            optim.step()
+            optim.step() #优化器更新参数
 
 
 def track_frame(
