@@ -82,8 +82,8 @@ class Tracking:
                 current_frame = RGBDFrame(*data_in) #创建当前帧
                 self.do_tracking(share_data, current_frame, kf_buffer) #做一次do_tracking跟踪当前帧
 
-                if self.render_freq > 0 and (frame_id + 1) % self.render_freq == 0: #如果到了渲染图片的时机
-                    self.render_debug_images(share_data, current_frame) #渲染图片
+                if self.render_freq > 0 and (frame_id + 1) % self.render_freq == 0: #如果到了渲染debug图片的时机
+                    self.render_debug_images(share_data, current_frame) #渲染图片，用于debug，不是必须的
             except Exception as e:
                         print("error in dataloading: ", e,
                             f"skipping frame {frame_id}")
@@ -105,7 +105,8 @@ class Tracking:
             map_states[k] = v.cuda() #加载map_states到gpu上
 
         self.profiler.tick("track frame")
-        frame_pose, optim, hit_mask = track_frame( #跟踪当前帧
+        # 跟踪当前帧，计算采样射线，渲染，算loss，backward(),返回优化后的位姿，优化器和命中掩码mask
+        frame_pose, optim, hit_mask = track_frame(
             self.last_frame.pose,
             current_frame,
             map_states,
@@ -122,43 +123,43 @@ class Tracking:
             profiler=self.profiler,
             depth_variance=True
         )
-        self.profiler.tok("track frame")
+        self.profiler.tok("track frame") #性能分析
 
-        current_frame.pose = frame_pose
-        current_frame.optim = optim
-        current_frame.hit_ratio = hit_mask.sum() / self.N_rays
-        self.last_frame = current_frame
+        current_frame.pose = frame_pose #将优化后的位姿放入当前帧
+        current_frame.optim = optim #将优化器和位姿放入当前帧
+        current_frame.hit_ratio = hit_mask.sum() / self.N_rays #计算采样射线命中率
+        self.last_frame = current_frame #将当前帧作为上一帧
 
         self.profiler.tick("transport frame")
-        self.check_keyframe(current_frame, kf_buffer)
+        self.check_keyframe(current_frame, kf_buffer) #如果当前帧为关键帧，则将当前帧放入关键帧缓冲区
         self.profiler.tok("transport frame")
 
-        share_data.push_pose(frame_pose.translation().detach().cpu().numpy())
+        share_data.push_pose(frame_pose.translation().detach().cpu().numpy()) #将优化后的位姿放入share_data中
 
     @torch.no_grad()
-    def render_debug_images(self, share_data, current_frame): #渲染图片
+    def render_debug_images(self, share_data, current_frame): #渲染图片，用于debug，不是必须的，可以不看，我也没看，哈
         rgb = current_frame.rgb
-        depth = current_frame.depth
-        rotation = current_frame.get_rotation()
-        ind = current_frame.stamp
-        w, h = self.render_res
+        depth = current_frame.depth #获取当前帧的rgb和depth
+        rotation = current_frame.get_rotation() #获取当前帧的旋转矩阵
+        ind = current_frame.stamp #获取当前帧的id
+        w, h = self.render_res #获取渲染分辨率
         final_outputs = dict()
 
-        decoder = share_data.decoder.cuda()
-        map_states = share_data.states
+        decoder = share_data.decoder.cuda() #从share_data中获取decoder
+        map_states = share_data.states #从share_data中获取地图states
         for k, v in map_states.items():
             map_states[k] = v.cuda()
 
-        rays_d = current_frame.get_rays(w, h).cuda()
-        rays_d = rays_d @ rotation.transpose(-1, -2)
+        rays_d = current_frame.get_rays(w, h).cuda() #计算当前帧的采样射线的方向
+        rays_d = rays_d @ rotation.transpose(-1, -2) #将采样射线旋转到世界坐标系下，因为采样射线是相机坐标系下的，而地图是世界坐标系下的
 
         rays_o = current_frame.get_translation()
-        rays_o = rays_o.unsqueeze(0).expand_as(rays_d)
+        rays_o = rays_o.unsqueeze(0).expand_as(rays_d) #将采样射线的原点扩展成和采样射线方向一样的形状
 
         rays_o = rays_o.reshape(1, -1, 3).contiguous()
-        rays_d = rays_d.reshape(1, -1, 3)
+        rays_d = rays_d.reshape(1, -1, 3) #将采样射线的原点和方向reshape成(1, -1, 3)的形状
 
-        final_outputs = render_rays(
+        final_outputs = render_rays( #渲染图片
             rays_o,
             rays_d,
             map_states,
@@ -174,14 +175,14 @@ class Tracking:
 
         rdepth = fill_in((h, w, 1),
                          final_outputs["ray_mask"].view(h, w),
-                         final_outputs["depth"], 0)
+                         final_outputs["depth"], 0) #将深度图填充到渲染分辨率的大小
         rcolor = fill_in((h, w, 3),
                          final_outputs["ray_mask"].view(h, w),
-                         final_outputs["color"], 0)
+                         final_outputs["color"], 0) #将颜色图填充到渲染分辨率的大小
         # self.logger.log_raw_image(ind, rcolor, rdepth)
 
         # raw_surface=fill_in((h, w, 1),
         #                  final_outputs["ray_mask"].view(h, w),
         #                  final_outputs["raw"], 0)
         # self.logger.log_data(ind, raw_surface, "raw_surface")
-        self.logger.log_images(ind, rgb, depth, rcolor, rdepth)
+        self.logger.log_images(ind, rgb, depth, rcolor, rdepth) #将rgb，depth，rcolor，rdepth保存到logger中

@@ -11,7 +11,7 @@ import torch
 import yaml
 
 
-class BasicLogger:
+class BasicLogger:  #logger.py,该类用于创建日志，保存数据，保存模型，保存图片等，用于后续的可视化和debug
     def __init__(self, args) -> None:
         self.args = args
         self.log_dir = osp.join(

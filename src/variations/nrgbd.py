@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
+# 这里的代码是基于Nerf的实现进行修改的，主要是修改了embedding的方式，以及输出的方式，NICE-SLAM也有类似的实现
 class GaussianFourierFeatureTransform(torch.nn.Module):
     """
     Modified based on the implementation of Gaussian Fourier feature mapping.
-
+    基于高斯傅里叶特征映射的实现进行修改。“傅里叶特征让网络在低维域中学习高频函数”：
     "Fourier Features Let Networks Learn High Frequency Functions in Low Dimensional Domains":
        https://arxiv.org/abs/2006.10739
        https://people.eecs.berkeley.edu/~bmild/fourfeat/index.html
@@ -33,15 +33,15 @@ class GaussianFourierFeatureTransform(torch.nn.Module):
 class Nerf_positional_embedding(torch.nn.Module):
     """
     Nerf positional embedding.
-
+    Nerf位置嵌入。
     """
 
     def __init__(self, in_dim, multires, log_sampling=True):
         super().__init__()
         self.log_sampling = log_sampling
         self.include_input = True
-        self.periodic_fns = [torch.sin, torch.cos]
-        self.max_freq_log2 = multires-1
+        self.periodic_fns = [torch.sin, torch.cos] #正弦余弦函数sin和cos
+        self.max_freq_log2 = multires-1 #最大频率
         self.num_freqs = multires
         self.max_freq = self.max_freq_log2
         self.N_freqs = self.num_freqs
@@ -54,7 +54,7 @@ class Nerf_positional_embedding(torch.nn.Module):
 
         if self.log_sampling:
             freq_bands = 2.**torch.linspace(0.,
-                                            self.max_freq, steps=self.N_freqs)
+                                            self.max_freq, steps=self.N_freqs) #这里的频率是指傅里叶变换中的频率，即sin和cos中的参数，这里的频率是指2的幂次方
         else:
             freq_bands = torch.linspace(
                 2.**0., 2.**self.max_freq, steps=self.N_freqs)
@@ -63,7 +63,7 @@ class Nerf_positional_embedding(torch.nn.Module):
             output.append(x)
         for freq in freq_bands:
             for p_fn in self.periodic_fns:
-                output.append(p_fn(x * freq))
+                output.append(p_fn(x * freq)) #sin(x*2^i)和cos(x*2^i),其中，i为0,1,2,...,self.max_freq
         ret = torch.cat(output, dim=1)
         return ret
 
@@ -95,7 +95,7 @@ class Decoder(nn.Module):
         self.W = width
         self.skips = skips
         if embedder == 'nerf':
-            self.pe = Nerf_positional_embedding(in_dim, multires)
+            self.pe = Nerf_positional_embedding(in_dim, multires) #嵌入方式
         elif embedder == 'none':
             self.pe = Same(in_dim)
         elif embedder == 'gaussian':
@@ -103,7 +103,7 @@ class Decoder(nn.Module):
         else:
             raise NotImplementedError("unknown positional encoder")
 
-        self.pts_linears = nn.ModuleList(
+        self.pts_linears = nn.ModuleList( #这里就是论文里的网络结构，输入是嵌入后的点，输出是sdf和rgb
             [nn.Linear(self.pe.embedding_size, width)] + [nn.Linear(width, width) if i not in self.skips else nn.Linear(width + self.pe.embedding_size, width) for i in range(depth-1)])
         self.sdf_out = nn.Linear(width, 1+sdf_dim)
         self.color_out = nn.Sequential(
@@ -132,7 +132,7 @@ class Decoder(nn.Module):
         rgb = self.color_out(h)
         outputs = torch.cat([rgb, sdf], dim=-1)
 
-        return outputs
+        return outputs  #输出sdf, rgb
 
     def get_sdf(self, inputs):
         return self.get_values(inputs['emb'])[:, 3]

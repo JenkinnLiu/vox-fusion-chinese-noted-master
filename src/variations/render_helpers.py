@@ -183,28 +183,28 @@ def eval_points(sdf_network, map_states, sampled_xyz, sampled_idx, voxel_size):
     #     for i in range(0, points.size(0), chunk_size)], 0).view(-1, res, res, res, 4)
 
 
-def render_rays(
-        rays_o,
-        rays_d,
-        map_states,
-        sdf_network,
-        step_size,
-        voxel_size,
-        truncation,
-        max_voxel_hit,
-        max_distance,
-        chunk_size=20000,
-        profiler=None,
-        return_raw=False
+def render_rays( #渲染射线
+        rays_o, #射线起点
+        rays_d, #射线方向
+        map_states, #地图
+        sdf_network, #decoder
+        step_size, #步长
+        voxel_size, #体素大小
+        truncation, #截断距离
+        max_voxel_hit, #最大体素命中数
+        max_distance, #最大距离
+        chunk_size=20000, #chunk大小
+        profiler=None, #性能分析器
+        return_raw=False #是否返回原始z值
 ):
-    centres = map_states["voxel_center_xyz"]
-    childrens = map_states["voxel_structure"]
+    centres = map_states["voxel_center_xyz"] #体素中心
+    childrens = map_states["voxel_structure"] #体素结构
 
     if profiler is not None:
         profiler.tick("ray_intersect")
     intersections, hits = ray_intersect(
         rays_o, rays_d, centres,
-        childrens, voxel_size, max_voxel_hit, max_distance)
+        childrens, voxel_size, max_voxel_hit, max_distance) #计算射线与体素的交点
     if profiler is not None:
         profiler.tok("ray_intersect")
     assert(hits.sum() > 0)
@@ -212,15 +212,15 @@ def render_rays(
     ray_mask = hits.view(1, -1)
     intersections = {
         name: outs[ray_mask].reshape(-1, outs.size(-1))
-        for name, outs in intersections.items()
+        for name, outs in intersections.items() #过滤掉不在视野内的无效交点
     }
 
     rays_o = rays_o[ray_mask].reshape(-1, 3)
-    rays_d = rays_d[ray_mask].reshape(-1, 3)
+    rays_d = rays_d[ray_mask].reshape(-1, 3) #过滤掉不在视野内的无效射线
 
     if profiler is not None:
         profiler.tick("ray_sample")
-    samples = ray_sample(intersections, step_size=step_size)
+    samples = ray_sample(intersections, step_size=step_size) #采样射线
     if profiler is not None:
         profiler.tok("ray_sample")
 
@@ -228,54 +228,57 @@ def render_rays(
     sampled_idx = samples['sampled_point_voxel_idx'].long()
 
     # only compute when the ray hits
+    # 只有当射线命中时才计算
     sample_mask = sampled_idx.ne(-1)
-    if sample_mask.sum() == 0:  # miss everything skip
+    if sample_mask.sum() == 0:  # miss everything ski
         return None, 0
 
     sampled_xyz = ray(rays_o.unsqueeze(
-        1), rays_d.unsqueeze(1), sampled_depth.unsqueeze(2))
+        1), rays_d.unsqueeze(1), sampled_depth.unsqueeze(2)) # 计算采样点的坐标
     sampled_dir = rays_d.unsqueeze(1).expand(
-        *sampled_depth.size(), rays_d.size()[-1])
+        *sampled_depth.size(), rays_d.size()[-1]) #计算采样点的射线方向
     sampled_dir = sampled_dir / \
-        (torch.norm(sampled_dir, 2, -1, keepdim=True) + 1e-8)
+        (torch.norm(sampled_dir, 2, -1, keepdim=True) + 1e-8) #归一化
     samples['sampled_point_xyz'] = sampled_xyz
     samples['sampled_point_ray_direction'] = sampled_dir
 
     # apply mask
-    samples_valid = {name: s[sample_mask] for name, s in samples.items()}
+    samples_valid = {name: s[sample_mask] for name, s in samples.items()} #过滤掉不在视野内的无效采样点
 
-    num_points = samples_valid['sampled_point_depth'].shape[0]
+    num_points = samples_valid['sampled_point_depth'].shape[0] #采样点的个数
     field_outputs = []
     if chunk_size < 0:
-        chunk_size = num_points
+        chunk_size = num_points #chunk大小为采样点的个数
 
     for i in range(0, num_points, chunk_size):
         chunk_samples = {name: s[i:i+chunk_size]
                          for name, s in samples_valid.items()}
 
         # get encoder features as inputs
+        # 获取编码器的特征作为输入
         if profiler is not None:
             profiler.tick("get_features")
-        chunk_inputs = get_features(chunk_samples, map_states, voxel_size)
+        chunk_inputs = get_features(chunk_samples, map_states, voxel_size) #获取采样点的特征，作为输入
         if profiler is not None:
             profiler.tok("get_features")
 
         # forward implicit fields
+        # 前向隐式场
         if profiler is not None:
             profiler.tick("render_core")
-        chunk_outputs = sdf_network(chunk_inputs)
+        chunk_outputs = sdf_network(chunk_inputs) #送入神经网络，输出sdf值和颜色，mask等信息
         if profiler is not None:
             profiler.tok("render_core")
 
-        field_outputs.append(chunk_outputs)
+        field_outputs.append(chunk_outputs) #将输出放入列表
 
     field_outputs = {name: torch.cat(
         [r[name] for r in field_outputs], dim=0) for name in field_outputs[0]}
 
     outputs = {'sample_mask': sample_mask}
 
-    sdf = masked_scatter_ones(sample_mask, field_outputs['sdf']).squeeze(-1)
-    colour = masked_scatter(sample_mask, field_outputs['color'])
+    sdf = masked_scatter_ones(sample_mask, field_outputs['sdf']).squeeze(-1) #过滤掉不在视野内的无效采样点，获得sdf值
+    colour = masked_scatter(sample_mask, field_outputs['color']) #过滤掉不在视野内的无效采样点
     # colour = torch.sigmoid(colour)
     sample_mask = outputs['sample_mask']
 
@@ -287,7 +290,7 @@ def render_rays(
     # convert sdf to weight
     def sdf2weights(sdf_in, trunc):
         weights = torch.sigmoid(sdf_in / trunc) * \
-            torch.sigmoid(-sdf_in / trunc)
+            torch.sigmoid(-sdf_in / trunc)   #论文里的公式(2),算权重wi
 
         signs = sdf_in[:, 1:] * sdf_in[:, :-1]
         mask = torch.where(
@@ -303,7 +306,7 @@ def render_rays(
         )
         weights = weights * mask * valid_mask
         # weights = weights * valid_mask
-        return weights / (torch.sum(weights, dim=-1, keepdims=True) + 1e-8), z_min
+        return weights / (torch.sum(weights, dim=-1, keepdims=True) + 1e-8), z_min #论文里的公式(3),归一化
 
     z_vals = samples["sampled_point_depth"]
 
@@ -312,15 +315,15 @@ def render_rays(
     depth = torch.sum(weights * z_vals, dim=-1)
 
     return {
-        "weights": weights,
-        "color": rgb,
-        "depth": depth,
-        "z_vals": z_vals,
-        "sdf": sdf,
-        "weights": weights,
-        "ray_mask": ray_mask,
+        "weights": weights, #权重
+        "color": rgb, #颜色
+        "depth": depth, #深度
+        "z_vals": z_vals, #z值
+        "sdf": sdf, #sdf值
+        "weights": weights, #权重
+        "ray_mask": ray_mask, #射线mask
         "raw": z_min if return_raw else None
-    }
+    } #返回权重，颜色，深度，z值，sdf值，采样mask，原始z值
 
 
 def bundle_adjust_frames(
@@ -415,49 +418,49 @@ def bundle_adjust_frames(
             optim.step() #优化器更新参数
 
 
-def track_frame(
-    frame_pose,
-    curr_frame,
-    map_states,
-    sdf_network,
-    loss_criteria,
-    voxel_size,
-    N_rays=512,
-    step_size=0.05,
-    num_iterations=10,
-    truncation=0.1,
-    learning_rate=1e-3,
-    max_voxel_hit=10,
-    max_distance=10,
-    profiler=None,
-    depth_variance=False
+def track_frame( #跟踪帧
+    frame_pose, #帧的位姿
+    curr_frame, #当前帧
+    map_states, #地图
+    sdf_network, #decoder
+    loss_criteria, #loss
+    voxel_size, #体素大小
+    N_rays=512, #采样射线的个数
+    step_size=0.05, #步长
+    num_iterations=10, #跟踪迭代次数
+    truncation=0.1, #截断距离
+    learning_rate=1e-3, #学习率
+    max_voxel_hit=10, #最大体素命中数
+    max_distance=10, #最大距离
+    profiler=None, #性能分析器,none
+    depth_variance=False #是否包含深度方差
 ):
 
-    init_pose = deepcopy(frame_pose).cuda()
-    init_pose.requires_grad_(True)
-    optim = torch.optim.Adam(init_pose.parameters(), lr=learning_rate)
+    init_pose = deepcopy(frame_pose).cuda() #深拷贝帧的位姿
+    init_pose.requires_grad_(True) #需要梯度
+    optim = torch.optim.Adam(init_pose.parameters(), lr=learning_rate) #将位姿参数放入Adam
 
-    for iter in range(num_iterations):
+    for iter in range(num_iterations): #迭代10次
         if iter == 0 and profiler is not None:
             profiler.tick("sample_rays")
         curr_frame.sample_rays(N_rays)
         if iter == 0 and profiler is not None:
             profiler.tok("sample_rays")
 
-        sample_mask = curr_frame.sample_mask
-        ray_dirs = curr_frame.rays_d[sample_mask].unsqueeze(0).cuda()
+        sample_mask = curr_frame.sample_mask #采样结果的mask
+        ray_dirs = curr_frame.rays_d[sample_mask].unsqueeze(0).cuda() #采样射线的方向（过滤掉不在视野内的无效射线）
         rgb = curr_frame.rgb[sample_mask].cuda()
-        depth = curr_frame.depth[sample_mask].cuda()
-
-        ray_dirs_iter = ray_dirs.squeeze(
-            0) @ init_pose.rotation().transpose(-1, -2)
+        depth = curr_frame.depth[sample_mask].cuda() #得到采样的rgb和深度信息
+        # 计算采样射线
+        ray_dirs_iter = ray_dirs.squeeze( #计算采样射线的方向
+            0) @ init_pose.rotation().transpose(-1, -2) #将采样射线旋转到世界坐标系下，因为采样射线是相机坐标系下的，而地图是世界坐标系下的
         ray_dirs_iter = ray_dirs_iter.unsqueeze(0)
         ray_start_iter = init_pose.translation().reshape(
-            1, 1, -1).expand_as(ray_dirs_iter).cuda().contiguous()
+            1, 1, -1).expand_as(ray_dirs_iter).cuda().contiguous() #将采样射线的原点扩展成和采样射线方向一样的形状
 
         if iter == 0 and profiler is not None:
             profiler.tick("render_rays")
-        final_outputs = render_rays(
+        final_outputs = render_rays(  #根据采样射线来渲染，返回权重，颜色，深度，z值，sdf值，采样mask，原始z值
             ray_start_iter,
             ray_dirs_iter,
             map_states,
@@ -474,21 +477,21 @@ def track_frame(
             profiler.tok("render_rays")
 
         hit_mask = final_outputs["ray_mask"].view(N_rays)
-        final_outputs["ray_mask"] = hit_mask
+        final_outputs["ray_mask"] = hit_mask #将命中的射线mask放入final_outputs
 
         if iter == 0 and profiler is not None:
             profiler.tick("loss_criteria")
         loss, _ = loss_criteria(
-            final_outputs, (rgb, depth), weight_depth_loss=depth_variance)
+            final_outputs, (rgb, depth), weight_depth_loss=depth_variance) #计算loss
         if iter == 0 and profiler is not None:
             profiler.tok("loss_criteria")
 
         if iter == 0 and profiler is not None:
             profiler.tick("backward step")
-        optim.zero_grad()
-        loss.backward()
-        optim.step()
+        optim.zero_grad() #梯度清零
+        loss.backward() #反向传播
+        optim.step() #优化器更新参数
         if iter == 0 and profiler is not None:
             profiler.tok("backward step")
 
-    return init_pose, optim, hit_mask
+    return init_pose, optim, hit_mask #返回优化后的位姿，优化器，命中的射线mask
